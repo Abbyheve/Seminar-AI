@@ -1,0 +1,6 @@
+# downloaded automatically by the notebooks
+data/finqa_test.json
+# pilot runs are only for timing, not used in the paper
+results_pilot/
+__pycache__/
+.ipynb_checkpoints/
