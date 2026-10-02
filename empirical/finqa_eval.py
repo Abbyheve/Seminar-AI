@@ -121,6 +121,12 @@ def ollama_chat(model, messages, num_ctx=4096, num_predict=1024, seed=42, think=
     }
 
 
+def unload_model(model):
+    """Remove the model from memory right away (Ollama otherwise keeps it loaded for 5 minutes),
+    so the next model has the full RAM available."""
+    requests.post(f"{OLLAMA_URL}/api/generate", json={"model": model, "keep_alive": 0}, timeout=60)
+
+
 # ---------------------------------------------------------------- tool setting
 
 def extract_code(text):
