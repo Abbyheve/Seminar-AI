@@ -9,7 +9,7 @@ Evaluates three local models (via Ollama) on a fixed sample of 200 FinQA test qu
 | `01_run_experiments.ipynb` | Pilot (speed check) and main run; writes raw answers to `results/*.jsonl` (resumable) |
 | `02_analysis.ipynb` | Scoring, tables, figures, significance tests, error analysis; no model calls |
 
-Outputs: `results/` (raw answers), `tables/` (CSV), `figures/` (PDF for the paper).
+Outputs: `results/` (raw answers), `tables/` (CSV and LaTeX `.tex` for `\input{}`, needs `\usepackage{booktabs}`), `figures/` (vector PDF for `\includegraphics`).
 
 ## Running
 
