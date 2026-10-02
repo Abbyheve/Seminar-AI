@@ -1,4 +1,5 @@
 requests
+datasets
 pandas
 numpy
 matplotlib

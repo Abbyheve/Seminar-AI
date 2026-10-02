@@ -1,7 +1,13 @@
 # Empirical part: FinQA with recent local LLMs
 
-Evaluates three local models (via Ollama) on a fixed sample of 200 FinQA test questions, in two settings
-(chain-of-thought vs. tool use with Python execution), and compares the results with FinBen (Xie et al., 2024).
+Evaluates three local models (via Ollama) on a fixed sample of 200 FinQA test questions in three settings:
+
+- **FinBen protocol**: FinBen's exact prompts and scoring rule (from their dataset `TheFinAI/flare-finqa` and
+  their code), so the results are directly comparable with FinBen's Table 3 (Xie et al., 2024)
+- **Chain-of-thought** and **tool use** (the model writes Python that is executed, with one repair round)
+
+The same responses are also scored with a strict and a tolerant number match, to show how much the score
+depends on the scoring rule.
 
 | File | Purpose |
 |---|---|
@@ -9,7 +15,7 @@ Evaluates three local models (via Ollama) on a fixed sample of 200 FinQA test qu
 | `01_run_experiments.ipynb` | Pilot (speed check) and main run; writes raw answers to `results/*.jsonl` (resumable) |
 | `02_analysis.ipynb` | Scoring, tables, figures, significance tests, error analysis; no model calls |
 
-Outputs: `results/` (raw answers), `tables/` (CSV), `figures/` (PDF for the paper).
+Outputs: `results/` (raw answers), `tables/` (CSV and LaTeX `.tex` for `\input{}`, needs `\usepackage{booktabs}`), `figures/` (vector PDF for `\includegraphics`).
 
 ## Running
 

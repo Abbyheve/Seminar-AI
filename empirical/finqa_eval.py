@@ -2,9 +2,12 @@
 
 Used by 01_run_experiments.ipynb (runs the models) and 02_analysis.ipynb (scores and compares).
 
-Two settings are evaluated:
-  - "cot":  the model reasons step by step and ends with "Answer: <number>"
-  - "tool": the model writes Python code, we execute it and feed back errors (max. 1 repair round)
+Three settings are evaluated:
+  - "finben": replication of FinBen's protocol: FinBen's own prompt (the "query" field of their
+              dataset TheFinAI/flare-finqa) as the only message, no system prompt, direct answer.
+              Scored with FinBen's rule: the whole response must equal FinBen's gold answer string.
+  - "cot":    the model reasons step by step and ends with "Answer: <number>"
+  - "tool":   the model writes Python code, we execute it and feed back errors (max. 1 repair round)
 """
 
 import json
@@ -20,6 +23,7 @@ from pathlib import Path
 import requests
 
 FINQA_URL = "https://raw.githubusercontent.com/czyssrs/FinQA/main/dataset/test.json"
+FINBEN_DATASET = "TheFinAI/flare-finqa"   # FinBen's version of the FinQA test set (prompts + gold answers)
 OLLAMA_URL = "http://localhost:11434"
 
 # FinBen's instruction for FinQA (FinBen paper, Table 7), reused so the prompts stay comparable.
@@ -74,6 +78,41 @@ def load_finqa(data_dir="data"):
     ]
 
 
+def load_flare_finqa(data_dir="data"):
+    """Load FinBen's FinQA test data (TheFinAI/flare-finqa on Hugging Face). Downloads it once.
+
+    Each row holds the exact prompt FinBen sent to the models ("query") and FinBen's gold answer
+    string ("answer"), which FinBen's code compares with the model response.
+    """
+    path = Path(data_dir) / "flare_finqa_test.jsonl"
+    if not path.exists():
+        from datasets import load_dataset
+        rows = load_dataset(FINBEN_DATASET, split="test")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(dict(r)) + "\n" for r in rows))
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def _norm(text):
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def attach_finben(items, flare_rows):
+    """Link each FinQA question to its row in FinBen's dataset (by question text and report text),
+    and add FinBen's prompt and gold answer to it. Returns only the questions that could be linked."""
+    queries = [_norm(r["query"]) for r in flare_rows]
+    linked = []
+    for it in items:
+        q, pre = _norm(it["question"]), _norm(" ".join(it["pre_text"]))[:80]
+        hits = [i for i, text in enumerate(queries) if q in text]
+        if len(hits) > 1:
+            hits = [i for i in hits if pre in queries[i]] or hits[:1]
+        if len(hits) >= 1:
+            row = flare_rows[hits[0]]
+            linked.append({**it, "finben_query": row["query"], "finben_gold": str(row["answer"])})
+    return linked
+
+
 def sample_items(items, n, seed=42):
     """Fixed random sample, so every model and setting sees the same questions."""
     return random.Random(seed).sample(items, n)
@@ -89,6 +128,8 @@ def format_context(item):
 
 
 def build_prompt(item, setting):
+    if setting == "finben":
+        return item["finben_query"]
     task = COT_TASK if setting == "cot" else TOOL_TASK
     return (
         f"{FINBEN_INSTRUCTION}\n\n{format_context(item)}\n\n"
@@ -157,13 +198,20 @@ def run_python(code, timeout=10):
 
 def solve(item, model, setting, **chat_kwargs):
     """Answer one question in the given setting. Returns a result record (saved as one JSONL line)."""
-    messages = [{"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": build_prompt(item, setting)}]
+    if setting == "finben":   # FinBen protocol: their prompt is the only message, no system prompt
+        messages = [{"role": "user", "content": build_prompt(item, setting)}]
+    else:
+        messages = [{"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": build_prompt(item, setting)}]
     text, stats = ollama_chat(model, messages, **chat_kwargs)
     calls = [stats]
     record = {"id": item["id"], "model": model, "setting": setting, "response": text}
 
-    if setting == "cot":
+    if setting == "finben":
+        # For the lenient re-scoring: the 'Answer:' line if there is one, else the last line
+        lines = [l for l in text.strip().splitlines() if l.strip()]
+        record["final"] = extract_final_answer(text) or (lines[-1].strip() if lines else None)
+    elif setting == "cot":
         record["final"] = extract_final_answer(text)
     else:
         code = extract_code(text)
@@ -259,19 +307,30 @@ def parse_yes_no(s):
     return m.group(1) if m else None
 
 
-def score_strict(final, item):
-    """Strict exact match, close to FinBen's EmAcc: the number as written (no rescaling of
-    percentages), rounded to 2 decimals, must equal the exact gold result rounded to 2 decimals."""
+def score_finben(response, item):
+    """FinBen's exact rule (PIXIU, src/tasks/flare.py, class QA):
+    acc = 1.0 if results[0].strip() == gold else 0.0
+    i.e. the WHOLE response, stripped of surrounding whitespace, must equal FinBen's gold string."""
+    if not isinstance(response, str):
+        return False
+    return response.strip() == item["finben_gold"]
+
+
+def score_strict(final, item, rel_tol=0.01):
+    """Strict number match: the final number exactly as written must be within 1% of the exact
+    gold result. No rescaling of percentages (14.46% != 0.14464) and the rounded human-written
+    answer is not accepted either (0.14 != 0.14464). Every strict match is also a tolerant match.
+    More lenient than FinBen's rule (score_finben), because only the final number is compared."""
     gold = item["gold_exe"]
     if isinstance(gold, str):
         return parse_yes_no(final) == gold
     value, _ = parse_number(final)
-    return value is not None and round(value, 2) == round(gold, 2)
+    return value is not None and math.isclose(value, gold, rel_tol=rel_tol, abs_tol=1e-4)
 
 
 def score_tolerant(final, item, rel_tol=0.01):
-    """Tolerant numeric match: within 1% of the exact result or of the rounded human answer,
-    accepting the percent/decimal scale either way (14% = 0.14 = 14)."""
+    """Tolerant number match: like score_strict, but also accepts the rounded human-written answer
+    (0.14 for 0.14464) and the percent/decimal scale either way (14% = 0.14 = 14)."""
     gold = item["gold_exe"]
     if isinstance(gold, str):
         return parse_yes_no(final) == gold
